@@ -19,7 +19,7 @@ const app = express();
 app.use("/api/payments/webhook", express.raw({ type: "application/json" }));
 
 app.use(cors({
-  origin: "http://localhost:5173",
+  origin: "https://turfxo.vercel.app",
   allowedHeaders: ["Content-Type", "Authorization"],
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
 }));
