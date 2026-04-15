@@ -9,20 +9,35 @@ const slotRoutes = require("./routes/slot.routes");
 const bookingRoutes = require("./routes/booking.routes");
 const adminRoutes = require("./routes/admin.routes");
 const userRoutes = require("./routes/user.routes");
-const paymentRoutes = require("./routes/payment.routes"); // ✅ ADD
+const paymentRoutes = require("./routes/payment.routes");
 
 const { errorHandler } = require("./middleware/error.middleware");
 
 const app = express();
 
-// ✅ Webhook ke liye raw body — express.json() se PEHLE likhna zaroori hai
+// ✅ Webhook (IMPORTANT - keep above json parser)
 app.use("/api/payments/webhook", express.raw({ type: "application/json" }));
 
+// 🔥 ✅ CORS FIX (FINAL WORKING)
 app.use(cors({
-  origin: "https://turfxo.vercel.app",
-  allowedHeaders: ["Content-Type", "Authorization"],
-  methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
+  origin: (origin, callback) => {
+    // allow requests with no origin (like mobile apps, curl, postman)
+    if (!origin) return callback(null, true);
+
+    // allow all vercel domains + localhost
+    if (
+      origin.includes("vercel.app") ||
+      origin.includes("localhost")
+    ) {
+      return callback(null, true);
+    }
+
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
 }));
+
+// Middleware
 app.use(express.json());
 app.use(morgan("dev"));
 
@@ -36,10 +51,12 @@ app.use("/api/slots", slotRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/users", userRoutes);
-app.use("/api/payments", paymentRoutes); // ✅ ADD
+app.use("/api/payments", paymentRoutes);
 
-// 404
-app.use((req, res) => res.status(404).json({ success: false, message: "Route not found" }));
+// 404 handler
+app.use((req, res) =>
+  res.status(404).json({ success: false, message: "Route not found" })
+);
 
 // Global Error Handler
 app.use(errorHandler);
