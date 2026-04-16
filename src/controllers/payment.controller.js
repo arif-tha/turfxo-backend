@@ -9,7 +9,8 @@ const {
 // POST /api/payments/create-order
 const createOrder = async (req, res, next) => {
   try {
-    const { turfId, date, startTime, endTime } = req.body;
+    // ✅ Player details bhi receive karo
+    const { turfId, date, startTime, endTime, playerName, playerPhone, players } = req.body;
 
     if (!turfId || !date || !startTime || !endTime) {
       return res.status(400).json({
@@ -34,7 +35,7 @@ const createOrder = async (req, res, next) => {
       return res.status(409).json({ success: false, message: "Slot already booked" });
     }
 
-    // ✅ Calculate price based on duration
+    // Calculate price based on duration
     const [sh, sm] = startTime.split(":").map(Number);
     const [eh, em] = endTime.split(":").map(Number);
     const durationHrs = ((eh * 60 + em) - (sh * 60 + sm)) / 60;
@@ -44,7 +45,7 @@ const createOrder = async (req, res, next) => {
     const receipt = `rcpt_${Date.now()}`;
     const rpOrder = await createRazorpayOrder({ amount: amountInPaise, receipt });
 
-    // Save pending booking
+    // ✅ Player details ke saath booking save karo
     const booking = await Booking.create({
       user: req.user._id,
       turf: turfId,
@@ -55,6 +56,9 @@ const createOrder = async (req, res, next) => {
       paymentStatus: "pending",
       status: "pending",
       orderId: rpOrder.id,
+      playerName: playerName || null,        // ✅
+      playerPhone: playerPhone || null,      // ✅
+      players: Number(players) || 1,        // ✅
     });
 
     res.status(201).json({
@@ -112,12 +116,10 @@ const verifyPayment = async (req, res, next) => {
 };
 
 // POST /api/payments/failed
-// ✅ FIXED — bookingId is now required and properly validated
 const handleFailedPayment = async (req, res, next) => {
   try {
     const { bookingId, reason } = req.body;
 
-    // ✅ Fixed: return 400 only if bookingId is truly missing (null/undefined/empty)
     if (!bookingId || bookingId === "null") {
       return res.status(400).json({ success: false, message: "bookingId required" });
     }
