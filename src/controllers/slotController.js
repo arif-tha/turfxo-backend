@@ -3,7 +3,7 @@ const Booking = require("../models/Booking");
 const Turf = require("../models/Turf");
 
 // ─────────────────────────────────────────
-// 🔧 HELPER — Generate time slots
+// 🔧 HELPER — Generate slots (supports overnight: e.g. 06:00 to 03:00 next day)
 // ─────────────────────────────────────────
 const generateSlots = (openTime, closeTime, durationMinutes, date) => {
   const slots = [];
@@ -11,18 +11,21 @@ const generateSlots = (openTime, closeTime, durationMinutes, date) => {
   const [closeH, closeM] = closeTime.split(":").map(Number);
 
   let current = openH * 60 + openM;
-  const end = closeH * 60 + closeM;
+
+  // ✅ Overnight support: agar closeTime < openTime, add 24hrs to close
+  let end = closeH * 60 + closeM;
+  if (end <= current) end += 24 * 60; // e.g. 03:00 = 180 → 180 + 1440 = 1620
 
   while (current + durationMinutes <= end) {
-    const startH = String(Math.floor(current / 60)).padStart(2, "0");
-    const startMin = String(current % 60).padStart(2, "0");
-    const endMin = current + durationMinutes;
-    const endH = String(Math.floor(endMin / 60)).padStart(2, "0");
-    const endMinStr = String(endMin % 60).padStart(2, "0");
+    const startH = Math.floor(current / 60) % 24;
+    const startMin = current % 60;
+    const endTotal = current + durationMinutes;
+    const endH = Math.floor(endTotal / 60) % 24;
+    const endMin = endTotal % 60;
 
     slots.push({
-      startTime: `${startH}:${startMin}`,
-      endTime: `${endH}:${endMinStr}`
+      startTime: `${String(startH).padStart(2, "0")}:${String(startMin).padStart(2, "0")}`,
+      endTime: `${String(endH).padStart(2, "0")}:${String(endMin).padStart(2, "0")}`,
     });
 
     current += durationMinutes;
@@ -32,7 +35,7 @@ const generateSlots = (openTime, closeTime, durationMinutes, date) => {
 };
 
 // ─────────────────────────────────────────
-// 📥 GET SLOTS — Dynamic generation
+// 📥 GET SLOTS
 // GET /api/slots?turfId=xxx&date=2025-07-15
 // ─────────────────────────────────────────
 const getSlots = async (req, res) => {
@@ -42,48 +45,59 @@ const getSlots = async (req, res) => {
     if (!turfId || !date) {
       return res.status(400).json({
         success: false,
-        message: "turfId and date are required"
+        message: "turfId and date are required",
       });
     }
 
-    // 1. Turf fetch karo
     const turf = await Turf.findById(turfId);
     if (!turf) {
       return res.status(404).json({ success: false, message: "Turf not found" });
     }
 
-    // 2. Slots generate karo
     const generatedSlots = generateSlots(
       turf.openTime || "06:00",
-      turf.closeTime || "22:00",
+      turf.closeTime || "03:00", // ✅ Default 3am next day
       turf.slotDuration || 60,
       date
     );
 
-    // 3. Us date ke booked slots fetch karo
+    // Booked slots
     const bookedSlots = await Booking.find({
       turf: turfId,
       date,
-      status: "booked"
+      status: "booked",
     }).select("startTime endTime");
 
-    const bookedTimes = new Set(bookedSlots.map(b => b.startTime));
+    const bookedTimes = new Set(bookedSlots.map((b) => b.startTime));
 
-    // 4. Har slot ko available/booked mark karo
-    //    Past slots bhi disable karo (aaj ki date ke liye)
-    const today = new Date().toISOString().split("T")[0];
-    const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
+    // ✅ Live time expiry — IST aware
+    const now = new Date();
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const istNow = new Date(now.getTime() + istOffset);
+    const todayIST = istNow.toISOString().split("T")[0];
+    const nowMinutes = istNow.getUTCHours() * 60 + istNow.getUTCMinutes();
 
-    const slots = generatedSlots.map(slot => {
-      const isPast =
-        date === today &&
-        slot.startTime.split(":").reduce((h, m) => +h * 60 + +m, 0) <= nowMinutes;
+    const slots = generatedSlots.map((slot) => {
+      const [sh, sm] = slot.startTime.split(":").map(Number);
+      const slotMinutes = sh * 60 + sm;
+
+      // ✅ Overnight slots (e.g. 00:00-03:00) are after midnight
+      // For today, past = slotMinutes <= nowMinutes (normal slots)
+      // For overnight slots (sh < 6), they are "next day" morning — not past today
+      let isPast = false;
+      if (date === todayIST) {
+        // Overnight slots (0:00 to 5:59) are NOT past for today — they're upcoming midnight slots
+        const isOvernightSlot = sh < 6;
+        if (!isOvernightSlot) {
+          isPast = slotMinutes <= nowMinutes;
+        }
+      }
 
       return {
         startTime: slot.startTime,
         endTime: slot.endTime,
         isBooked: bookedTimes.has(slot.startTime),
-        isPast
+        isPast,
       };
     });
 
@@ -92,7 +106,7 @@ const getSlots = async (req, res) => {
       date,
       turfId,
       count: slots.length,
-      data: slots
+      data: slots,
     });
   } catch (err) {
     console.error("Get Slots Error:", err);
@@ -100,7 +114,7 @@ const getSlots = async (req, res) => {
   }
 };
 
-// ➕ CREATE SLOT — Purana code, touch nahi kiya (admin ke liye)
+// ➕ CREATE SLOT (admin)
 const createSlot = async (req, res) => {
   try {
     const { turf, date, startTime, endTime } = req.body;
@@ -118,7 +132,7 @@ const createSlot = async (req, res) => {
   }
 };
 
-// 🔒 BOOK SLOT — Purana code rakha (legacy support)
+// 🔒 BOOK SLOT (legacy)
 const bookSlot = async (req, res) => {
   try {
     const { id } = req.params;
@@ -131,7 +145,7 @@ const bookSlot = async (req, res) => {
       user: req.user.id,
       turf: slot.turf,
       slot: slot._id,
-      totalPrice: 500
+      totalPrice: 500,
     });
     return res.status(200).json({ success: true, message: "Slot booked", data: booking });
   } catch (err) {
