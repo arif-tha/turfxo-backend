@@ -25,19 +25,25 @@ const rangesOverlap = (startA, endA, startB, endB) => {
 
 const getIstDate = () => {
   const now = new Date();
-  const localeString = now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
-  return new Date(localeString);
+  const istOffsetMinutes = 330; // IST = UTC+5:30
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
+  return new Date(utcMs + istOffsetMinutes * 60000);
 };
 
 const getSlotDateTime = (date, time, openTime, closeTime) => {
-  const slotDate = new Date(`${date}T${time}:00+05:30`);
+  const [year, month, day] = date.split("-").map(Number);
+  const [hours, minutes] = time.split(":").map(Number);
+
+  const slotUtcMs = Date.UTC(year, month - 1, day, hours, minutes) - 330 * 60000;
+  const slotDate = new Date(slotUtcMs);
+
   const openMinutes = timeToMinutes(openTime);
   const closeMinutes = timeToMinutes(closeTime);
   const slotMinutes = timeToMinutes(time);
 
   const isOvernight = closeMinutes <= openMinutes;
   if (isOvernight && slotMinutes < openMinutes) {
-    slotDate.setDate(slotDate.getDate() + 1);
+    slotDate.setUTCDate(slotDate.getUTCDate() + 1);
   }
 
   return slotDate;
@@ -117,7 +123,12 @@ const getSlots = async (req, res) => {
         turf.openTime || "06:00",
         turf.closeTime || "03:00"
       );
-      const isPast = slotDateTime <= istNow;
+      const isPast = slotDateTime < istNow;
+
+      const slotMinutes = timeToMinutes(slot.startTime);
+      const openMinutes = timeToMinutes(turf.openTime || "06:00");
+      const closeMinutes = timeToMinutes(turf.closeTime || "03:00");
+      const isNextDay = closeMinutes <= openMinutes && slotMinutes < openMinutes;
 
       const isBooked = bookedSlots.some((booking) =>
         rangesOverlap(slot.startTime, slot.endTime, booking.startTime, booking.endTime)
@@ -128,6 +139,7 @@ const getSlots = async (req, res) => {
         endTime: slot.endTime,
         isBooked,
         isPast,
+        isNextDay,
       };
     });
 
