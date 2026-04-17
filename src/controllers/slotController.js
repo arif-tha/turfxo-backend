@@ -2,6 +2,27 @@ const Slot = require("../models/Slot");
 const Booking = require("../models/Booking");
 const Turf = require("../models/Turf");
 
+const timeToMinutes = (time) => {
+  const [hours, minutes] = time.split(":").map(Number);
+  return hours * 60 + minutes;
+};
+
+const isTimeInRange = (time, start, end) => {
+  const t = timeToMinutes(time);
+  const s = timeToMinutes(start);
+  const e = timeToMinutes(end);
+
+  if (s < e) {
+    return t >= s && t < e;
+  }
+
+  return t >= s || t < e;
+};
+
+const rangesOverlap = (startA, endA, startB, endB) => {
+  return isTimeInRange(startA, startB, endB) || isTimeInRange(startB, startA, endA);
+};
+
 // ─────────────────────────────────────────
 // 🔧 HELPER — Generate slots (supports overnight: e.g. 06:00 to 03:00 next day)
 // ─────────────────────────────────────────
@@ -68,8 +89,6 @@ const getSlots = async (req, res) => {
       status: "booked",
     }).select("startTime endTime");
 
-    const bookedTimes = new Set(bookedSlots.map((b) => b.startTime));
-
     // ✅ Live time expiry — IST aware
     const now = new Date();
     const istOffset = 5.5 * 60 * 60 * 1000;
@@ -86,17 +105,20 @@ const getSlots = async (req, res) => {
       // For overnight slots (sh < 6), they are "next day" morning — not past today
       let isPast = false;
       if (date === todayIST) {
-        // Overnight slots (0:00 to 5:59) are NOT past for today — they're upcoming midnight slots
         const isOvernightSlot = sh < 6;
         if (!isOvernightSlot) {
           isPast = slotMinutes <= nowMinutes;
         }
       }
 
+      const isBooked = bookedSlots.some((booking) =>
+        rangesOverlap(slot.startTime, slot.endTime, booking.startTime, booking.endTime)
+      );
+
       return {
         startTime: slot.startTime,
         endTime: slot.endTime,
-        isBooked: bookedTimes.has(slot.startTime),
+        isBooked,
         isPast,
       };
     });

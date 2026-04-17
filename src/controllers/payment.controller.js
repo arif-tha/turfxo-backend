@@ -6,6 +6,27 @@ const {
   verifyWebhookSignature,
 } = require("../services/payment.service");
 
+const timeToMinutes = (time) => {
+  const [hours, minutes] = time.split(":").map(Number);
+  return hours * 60 + minutes;
+};
+
+const isTimeInRange = (time, start, end) => {
+  const t = timeToMinutes(time);
+  const s = timeToMinutes(start);
+  const e = timeToMinutes(end);
+
+  if (s < e) {
+    return t >= s && t < e;
+  }
+
+  return t >= s || t < e;
+};
+
+const rangesOverlap = (startA, endA, startB, endB) => {
+  return isTimeInRange(startA, startB, endB) || isTimeInRange(startB, startA, endA);
+};
+
 // POST /api/payments/create-order
 const createOrder = async (req, res, next) => {
   try {
@@ -24,14 +45,18 @@ const createOrder = async (req, res, next) => {
       return res.status(404).json({ success: false, message: "Turf not found" });
     }
 
-    // Slot already booked check
-    const existing = await Booking.findOne({
+    // Slot already booked check (handle multi-slot booking ranges)
+    const existingBookings = await Booking.find({
       turf: turfId,
       date,
-      startTime,
       status: "booked",
-    });
-    if (existing) {
+    }).select("startTime endTime");
+
+    const hasOverlap = existingBookings.some((booking) =>
+      rangesOverlap(startTime, endTime, booking.startTime, booking.endTime)
+    );
+
+    if (hasOverlap) {
       return res.status(409).json({ success: false, message: "Slot already booked" });
     }
 

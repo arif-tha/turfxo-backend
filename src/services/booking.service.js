@@ -3,17 +3,41 @@ const Booking = require("../models/Booking");
 const Turf = require("../models/Turf");
 const ApiError = require("../utils/ApiError");
 
+const timeToMinutes = (time) => {
+  const [hours, minutes] = time.split(":").map(Number);
+  return hours * 60 + minutes;
+};
+
+const isTimeInRange = (time, start, end) => {
+  const t = timeToMinutes(time);
+  const s = timeToMinutes(start);
+  const e = timeToMinutes(end);
+
+  if (s < e) {
+    return t >= s && t < e;
+  }
+
+  return t >= s || t < e;
+};
+
+const rangesOverlap = (startA, endA, startB, endB) => {
+  return isTimeInRange(startA, startB, endB) || isTimeInRange(startB, startA, endA);
+};
+
 // ✅ CREATE BOOKING
 const createBooking = async (userId, { turfId, date, startTime, endTime }) => {
   // Double booking check
-  const existing = await Booking.findOne({
+  const existingBookings = await Booking.find({
     turf: turfId,
     date,
-    startTime,
     status: "booked"
-  });
+  }).select("startTime endTime");
 
-  if (existing) {
+  const hasOverlap = existingBookings.some((booking) =>
+    rangesOverlap(startTime, endTime, booking.startTime, booking.endTime)
+  );
+
+  if (hasOverlap) {
     throw new ApiError(400, "Slot already booked");
   }
 
@@ -74,15 +98,18 @@ const rescheduleBooking = async (bookingId, userId, { turfId, date, startTime, e
   }
 
   // New slot double booking check
-  const existing = await Booking.findOne({
+  const existingBookings = await Booking.find({
     turf: turfId,
     date,
-    startTime,
     status: "booked",
     _id: { $ne: bookingId } // apni booking exclude karo
-  });
+  }).select("startTime endTime");
 
-  if (existing) throw new ApiError(400, "New slot already booked");
+  const hasOverlap = existingBookings.some((existing) =>
+    rangesOverlap(startTime, endTime, existing.startTime, existing.endTime)
+  );
+
+  if (hasOverlap) throw new ApiError(400, "New slot already booked");
 
   booking.turf = turfId;
   booking.date = date;
