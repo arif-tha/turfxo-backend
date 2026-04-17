@@ -23,6 +23,26 @@ const rangesOverlap = (startA, endA, startB, endB) => {
   return isTimeInRange(startA, startB, endB) || isTimeInRange(startB, startA, endA);
 };
 
+const getIstDate = () => {
+  const now = new Date();
+  const localeString = now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
+  return new Date(localeString);
+};
+
+const getSlotDateTime = (date, time, openTime, closeTime) => {
+  const slotDate = new Date(`${date}T${time}:00+05:30`);
+  const openMinutes = timeToMinutes(openTime);
+  const closeMinutes = timeToMinutes(closeTime);
+  const slotMinutes = timeToMinutes(time);
+
+  const isOvernight = closeMinutes <= openMinutes;
+  if (isOvernight && slotMinutes < openMinutes) {
+    slotDate.setDate(slotDate.getDate() + 1);
+  }
+
+  return slotDate;
+};
+
 // ─────────────────────────────────────────
 // 🔧 HELPER — Generate slots (supports overnight: e.g. 06:00 to 03:00 next day)
 // ─────────────────────────────────────────
@@ -89,27 +109,15 @@ const getSlots = async (req, res) => {
       status: "booked",
     }).select("startTime endTime");
 
-    // ✅ Live time expiry — IST aware
-    const now = new Date();
-    const istOffset = 5.5 * 60 * 60 * 1000;
-    const istNow = new Date(now.getTime() + istOffset);
-    const todayIST = istNow.toISOString().split("T")[0];
-    const nowMinutes = istNow.getUTCHours() * 60 + istNow.getUTCMinutes();
-
+    const istNow = getIstDate();
     const slots = generatedSlots.map((slot) => {
-      const [sh, sm] = slot.startTime.split(":").map(Number);
-      const slotMinutes = sh * 60 + sm;
-
-      // ✅ Overnight slots (e.g. 00:00-03:00) are after midnight
-      // For today, past = slotMinutes <= nowMinutes (normal slots)
-      // For overnight slots (sh < 6), they are "next day" morning — not past today
-      let isPast = false;
-      if (date === todayIST) {
-        const isOvernightSlot = sh < 6;
-        if (!isOvernightSlot) {
-          isPast = slotMinutes <= nowMinutes;
-        }
-      }
+      const slotDateTime = getSlotDateTime(
+        date,
+        slot.startTime,
+        turf.openTime || "06:00",
+        turf.closeTime || "03:00"
+      );
+      const isPast = slotDateTime <= istNow;
 
       const isBooked = bookedSlots.some((booking) =>
         rangesOverlap(slot.startTime, slot.endTime, booking.startTime, booking.endTime)
