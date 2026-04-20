@@ -2,6 +2,10 @@ const Slot = require("../models/Slot");
 const Booking = require("../models/Booking");
 const Turf = require("../models/Turf");
 
+// ─────────────────────────────────────────
+// 🔧 HELPERS
+// ─────────────────────────────────────────
+
 const timeToMinutes = (time) => {
   const [hours, minutes] = time.split(":").map(Number);
   return hours * 60 + minutes;
@@ -12,64 +16,61 @@ const isTimeInRange = (time, start, end) => {
   const s = timeToMinutes(start);
   const e = timeToMinutes(end);
 
-  if (s < e) {
-    return t >= s && t < e;
-  }
-
+  if (s < e) return t >= s && t < e;
   return t >= s || t < e;
 };
 
 const rangesOverlap = (startA, endA, startB, endB) => {
-  return isTimeInRange(startA, startB, endB) || isTimeInRange(startB, startA, endA);
+  return (
+    isTimeInRange(startA, startB, endB) ||
+    isTimeInRange(startB, startA, endA)
+  );
 };
 
-const getIstNowMs = () => {
-  const istOffsetMs = 330 * 60 * 1000;
-  return Date.now() + istOffsetMs;
-};
-
-const getSlotStartMs = (date, time, openTime, closeTime) => {
+// ✅ SAFE IST → UTC conversion
+const getSlotStartUtcMs = (date, slotTime, openTime, closeTime) => {
   const [year, month, day] = date.split("-").map(Number);
-  const [hours, minutes] = time.split(":").map(Number);
+  const [h, m] = slotTime.split(":").map(Number);
 
-  const slotMs = Date.UTC(year, month - 1, day, hours, minutes) - 330 * 60 * 1000;
-  const openMinutes = timeToMinutes(openTime);
-  const closeMinutes = timeToMinutes(closeTime);
-  const slotMinutes = timeToMinutes(time);
+  const openMin = timeToMinutes(openTime);
+  const closeMin = timeToMinutes(closeTime);
+  const slotMin = h * 60 + m;
 
-  const isOvernight = closeMinutes <= openMinutes;
-  return isOvernight && slotMinutes < openMinutes
-    ? slotMs + 24 * 60 * 60 * 1000
-    : slotMs;
+  const isOvernight = closeMin <= openMin;
+  const isNextDay = isOvernight && slotMin < openMin;
+
+  const slotDay = isNextDay ? day + 1 : day;
+
+  // IST → UTC (minus 5:30)
+  return Date.UTC(year, month - 1, slotDay, h, m) - (330 * 60 * 1000);
 };
 
 // ─────────────────────────────────────────
-// 🔧 HELPER — Generate slots (supports overnight: e.g. 06:00 to 03:00 next day)
+// 🔧 SLOT GENERATOR
 // ─────────────────────────────────────────
-const generateSlots = (openTime, closeTime, durationMinutes, date) => {
+
+const generateSlots = (openTime, closeTime, duration) => {
   const slots = [];
-  const [openH, openM] = openTime.split(":").map(Number);
-  const [closeH, closeM] = closeTime.split(":").map(Number);
 
-  let current = openH * 60 + openM;
+  let start = timeToMinutes(openTime);
+  let end = timeToMinutes(closeTime);
 
-  // ✅ Overnight support: agar closeTime < openTime, add 24hrs to close
-  let end = closeH * 60 + closeM;
-  if (end <= current) end += 24 * 60; // e.g. 03:00 = 180 → 180 + 1440 = 1620
+  if (end <= start) end += 24 * 60;
 
-  while (current + durationMinutes <= end) {
-    const startH = Math.floor(current / 60) % 24;
-    const startMin = current % 60;
-    const endTotal = current + durationMinutes;
-    const endH = Math.floor(endTotal / 60) % 24;
-    const endMin = endTotal % 60;
+  while (start + duration <= end) {
+    const sH = Math.floor(start / 60) % 24;
+    const sM = start % 60;
+
+    const eTotal = start + duration;
+    const eH = Math.floor(eTotal / 60) % 24;
+    const eM = eTotal % 60;
 
     slots.push({
-      startTime: `${String(startH).padStart(2, "0")}:${String(startMin).padStart(2, "0")}`,
-      endTime: `${String(endH).padStart(2, "0")}:${String(endMin).padStart(2, "0")}`,
+      startTime: `${String(sH).padStart(2, "0")}:${String(sM).padStart(2, "0")}`,
+      endTime: `${String(eH).padStart(2, "0")}:${String(eM).padStart(2, "0")}`,
     });
 
-    current += durationMinutes;
+    start += duration;
   }
 
   return slots;
@@ -77,8 +78,8 @@ const generateSlots = (openTime, closeTime, durationMinutes, date) => {
 
 // ─────────────────────────────────────────
 // 📥 GET SLOTS
-// GET /api/slots?turfId=xxx&date=2025-07-15
 // ─────────────────────────────────────────
+
 const getSlots = async (req, res) => {
   try {
     const { turfId, date } = req.query;
@@ -86,63 +87,73 @@ const getSlots = async (req, res) => {
     if (!turfId || !date) {
       return res.status(400).json({
         success: false,
-        message: "turfId and date are required",
+        message: "turfId and date required",
       });
     }
 
     const turf = await Turf.findById(turfId);
     if (!turf) {
-      return res.status(404).json({ success: false, message: "Turf not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Turf not found",
+      });
     }
 
-    const generatedSlots = generateSlots(
-      turf.openTime || "06:00",
-      turf.closeTime || "03:00", // ✅ Default 3am next day
-      turf.slotDuration || 60,
-      date
-    );
+    const openTime = turf.openTime || "06:00";
+    const closeTime = turf.closeTime || "03:00";
+    const duration = turf.slotDuration || 60;
 
-    // Booked slots
+    const generatedSlots = generateSlots(openTime, closeTime, duration);
+
+    // ✅ booked slots
     const bookedSlots = await Booking.find({
       turf: turfId,
       date,
       status: "booked",
     }).select("startTime endTime");
 
-    const istNowMs = getIstNowMs();
+    // ✅ CURRENT TIME (PURE UTC)
+    const nowUtc = Date.now();
 
-    // Parse the requested date in IST
-    const [year, month, day] = date.split("-").map(Number);
-    const requestedDateMs = Date.UTC(year, month - 1, day, 0, 0, 0) - 330 * 60 * 1000;
-    const todayIstMs = Date.UTC(
-      new Date(istNowMs).getUTCFullYear(),
-      new Date(istNowMs).getUTCMonth(),
-      new Date(istNowMs).getUTCDate(),
-      0,
-      0,
-      0
-    ) - 330 * 60 * 1000;
+    // ✅ requested date midnight UTC
+    const [y, m, d] = date.split("-").map(Number);
+    const requestedMidnightUtc = Date.UTC(y, m - 1, d);
 
-    // Check if the requested date is in the past
-    const isDatePast = requestedDateMs < todayIstMs;
+    // ✅ today's midnight UTC
+    const now = new Date();
+    const todayMidnightUtc = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate()
+    );
+
+    const isDatePast = requestedMidnightUtc < todayMidnightUtc;
 
     const slots = generatedSlots.map((slot) => {
-      const slotStartMs = getSlotStartMs(
+      const slotUtc = getSlotStartUtcMs(
         date,
         slot.startTime,
-        turf.openTime || "06:00",
-        turf.closeTime || "03:00"
+        openTime,
+        closeTime
       );
-      const isPast = isDatePast || slotStartMs < istNowMs;
 
-      const slotMinutes = timeToMinutes(slot.startTime);
-      const openMinutes = timeToMinutes(turf.openTime || "06:00");
-      const closeMinutes = timeToMinutes(turf.closeTime || "03:00");
-      const isNextDay = closeMinutes <= openMinutes && slotMinutes < openMinutes;
+      // ✅ FIXED: correct past logic
+      const isPast = isDatePast || slotUtc < nowUtc;
 
-      // ✅ FIX: Check if ANY booking overlaps with this slot
-      const isBooked = bookedSlots.some((booking) =>
-        rangesOverlap(slot.startTime, slot.endTime, booking.startTime, booking.endTime)
+      const slotMin = timeToMinutes(slot.startTime);
+      const openMin = timeToMinutes(openTime);
+      const closeMin = timeToMinutes(closeTime);
+
+      const isOvernight = closeMin <= openMin;
+      const isNextDay = isOvernight && slotMin < openMin;
+
+      const isBooked = bookedSlots.some((b) =>
+        rangesOverlap(
+          slot.startTime,
+          slot.endTime,
+          b.startTime,
+          b.endTime
+        )
       );
 
       return {
@@ -154,56 +165,111 @@ const getSlots = async (req, res) => {
       };
     });
 
-    return res.status(200).json({
+    return res.json({
       success: true,
       date,
       turfId,
       count: slots.length,
       data: slots,
     });
+
   } catch (err) {
     console.error("Get Slots Error:", err);
-    return res.status(500).json({ success: false, message: "Error fetching slots" });
+    return res.status(500).json({
+      success: false,
+      message: "Error fetching slots",
+    });
   }
 };
 
-// ➕ CREATE SLOT (admin)
+// ─────────────────────────────────────────
+// ➕ CREATE SLOT
+// ─────────────────────────────────────────
+
 const createSlot = async (req, res) => {
   try {
     const { turf, date, startTime, endTime } = req.body;
+
     if (!turf || !date || !startTime || !endTime) {
-      return res.status(400).json({ success: false, message: "All fields are required" });
+      return res.status(400).json({
+        success: false,
+        message: "All fields required",
+      });
     }
-    const existing = await Slot.findOne({ turf, date, startTime, endTime });
-    if (existing) {
-      return res.status(400).json({ success: false, message: "Slot already exists" });
+
+    const exists = await Slot.findOne({ turf, date, startTime, endTime });
+    if (exists) {
+      return res.status(400).json({
+        success: false,
+        message: "Slot already exists",
+      });
     }
+
     const slot = await Slot.create({ turf, date, startTime, endTime });
-    return res.status(201).json({ success: true, message: "Slot created successfully", data: slot });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: "Error creating slot" });
+
+    res.status(201).json({
+      success: true,
+      message: "Slot created",
+      data: slot,
+    });
+
+  } catch {
+    res.status(500).json({
+      success: false,
+      message: "Error creating slot",
+    });
   }
 };
 
-// 🔒 BOOK SLOT (legacy)
+// ─────────────────────────────────────────
+// 🔒 BOOK SLOT
+// ─────────────────────────────────────────
+
 const bookSlot = async (req, res) => {
   try {
     const { id } = req.params;
+
     const slot = await Slot.findById(id);
-    if (!slot) return res.status(404).json({ success: false, message: "Slot not found" });
-    if (slot.isBooked) return res.status(400).json({ success: false, message: "Slot already booked" });
+    if (!slot) {
+      return res.status(404).json({
+        success: false,
+        message: "Slot not found",
+      });
+    }
+
+    if (slot.isBooked) {
+      return res.status(400).json({
+        success: false,
+        message: "Already booked",
+      });
+    }
+
     slot.isBooked = true;
     await slot.save();
+
     const booking = await Booking.create({
       user: req.user.id,
       turf: slot.turf,
       slot: slot._id,
       totalPrice: 500,
     });
-    return res.status(200).json({ success: true, message: "Slot booked", data: booking });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: "Error booking slot" });
+
+    res.json({
+      success: true,
+      message: "Booked",
+      data: booking,
+    });
+
+  } catch {
+    res.status(500).json({
+      success: false,
+      message: "Error booking",
+    });
   }
 };
 
-module.exports = { createSlot, getSlots, bookSlot };
+module.exports = {
+  getSlots,
+  createSlot,
+  bookSlot,
+};
