@@ -23,30 +23,24 @@ const rangesOverlap = (startA, endA, startB, endB) => {
   return isTimeInRange(startA, startB, endB) || isTimeInRange(startB, startA, endA);
 };
 
-const getIstDate = () => {
-  const now = new Date();
-  const istOffsetMinutes = 330; // IST = UTC+5:30
-  const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
-  return new Date(utcMs + istOffsetMinutes * 60000);
+const getIstNowMs = () => {
+  const istOffsetMs = 330 * 60 * 1000;
+  return Date.now() + istOffsetMs;
 };
 
-const getSlotDateTime = (date, time, openTime, closeTime) => {
+const getSlotStartMs = (date, time, openTime, closeTime) => {
   const [year, month, day] = date.split("-").map(Number);
   const [hours, minutes] = time.split(":").map(Number);
 
-  const slotUtcMs = Date.UTC(year, month - 1, day, hours, minutes) - 330 * 60000;
-  const slotDate = new Date(slotUtcMs);
-
+  const slotMs = Date.UTC(year, month - 1, day, hours, minutes) - 330 * 60 * 1000;
   const openMinutes = timeToMinutes(openTime);
   const closeMinutes = timeToMinutes(closeTime);
   const slotMinutes = timeToMinutes(time);
 
   const isOvernight = closeMinutes <= openMinutes;
-  if (isOvernight && slotMinutes < openMinutes) {
-    slotDate.setUTCDate(slotDate.getUTCDate() + 1);
-  }
-
-  return slotDate;
+  return isOvernight && slotMinutes < openMinutes
+    ? slotMs + 24 * 60 * 60 * 1000
+    : slotMs;
 };
 
 // ─────────────────────────────────────────
@@ -115,21 +109,38 @@ const getSlots = async (req, res) => {
       status: "booked",
     }).select("startTime endTime");
 
-    const istNow = getIstDate();
+    const istNowMs = getIstNowMs();
+
+    // Parse the requested date in IST
+    const [year, month, day] = date.split("-").map(Number);
+    const requestedDateMs = Date.UTC(year, month - 1, day, 0, 0, 0) - 330 * 60 * 1000;
+    const todayIstMs = Date.UTC(
+      new Date(istNowMs).getUTCFullYear(),
+      new Date(istNowMs).getUTCMonth(),
+      new Date(istNowMs).getUTCDate(),
+      0,
+      0,
+      0
+    ) - 330 * 60 * 1000;
+
+    // Check if the requested date is in the past
+    const isDatePast = requestedDateMs < todayIstMs;
+
     const slots = generatedSlots.map((slot) => {
-      const slotDateTime = getSlotDateTime(
+      const slotStartMs = getSlotStartMs(
         date,
         slot.startTime,
         turf.openTime || "06:00",
         turf.closeTime || "03:00"
       );
-      const isPast = slotDateTime < istNow;
+      const isPast = isDatePast || slotStartMs < istNowMs;
 
       const slotMinutes = timeToMinutes(slot.startTime);
       const openMinutes = timeToMinutes(turf.openTime || "06:00");
       const closeMinutes = timeToMinutes(turf.closeTime || "03:00");
       const isNextDay = closeMinutes <= openMinutes && slotMinutes < openMinutes;
 
+      // ✅ FIX: Check if ANY booking overlaps with this slot
       const isBooked = bookedSlots.some((booking) =>
         rangesOverlap(slot.startTime, slot.endTime, booking.startTime, booking.endTime)
       );
