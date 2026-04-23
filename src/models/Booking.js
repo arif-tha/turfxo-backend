@@ -16,12 +16,9 @@ const bookingSchema = new mongoose.Schema(
     date: { type: String, required: true },
     startTime: { type: String, required: true },
     endTime: { type: String, required: true },
-
-    // ✅ Player details — naye fields
     playerName: { type: String, default: null },
     playerPhone: { type: String, default: null },
     players: { type: Number, default: 1 },
-
     status: {
       type: String,
       enum: ["pending", "booked", "cancelled", "completed"],
@@ -31,13 +28,19 @@ const bookingSchema = new mongoose.Schema(
     totalPrice: { type: Number, required: true, min: 0 },
     paymentStatus: {
       type: String,
-      enum: ["pending", "paid", "failed"],
+      enum: ["pending", "paid", "failed", "refunded"],
       default: "pending"
     },
     paymentId: { type: String, default: null },
     orderId: { type: String, default: null },
     razorpaySignature: { type: String, default: null },
     paymentFailureReason: { type: String, default: null },
+    refundId: { type: String, default: null },
+    refundStatus: {
+      type: String,
+      enum: ["not_applicable", "initiated", "failed"],
+      default: "not_applicable"
+    },
     bookingDate: { type: Date, default: Date.now, index: true }
   },
   { timestamps: true }
